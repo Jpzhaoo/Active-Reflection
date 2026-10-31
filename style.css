@@ -1,0 +1,367 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+.container {
+    width: 100%;
+    height: 100vh;
+    position: relative;
+}
+
+/* 输入区固定在页面正中间 */
+.input-section {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1000;
+    text-align: center;
+}
+
+#wordInput {
+    padding: 15px 25px;
+    font-size: 18px;
+    border: none;
+    border-radius: 30px;
+    width: 400px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+    outline: none;
+    transition: all 0.3s ease;
+    background: rgba(255, 255, 255, 0.95);
+}
+
+#wordInput:focus {
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+    transform: translateY(-2px);
+}
+
+.instructions {
+    margin-top: 10px;
+    color: white;
+    font-size: 14px;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+/* 导出 / 导入 / 保存状态 */
+.toolbar {
+    margin-top: 8px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+}
+
+.toolbar button {
+    padding: 6px 16px;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.toolbar button:hover {
+    background: rgba(255, 255, 255, 0.35);
+}
+
+.toolbar button:focus-visible {
+    outline: 2px solid #ffd700;
+    outline-offset: 2px;
+}
+
+#saveStatus {
+    min-width: 130px;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 12px;
+    text-align: left;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+#connectionCanvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 1;
+}
+
+#bubbleContainer {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+}
+
+.bubble {
+    position: absolute;
+    padding: 15px 25px;
+    background: linear-gradient(135deg, #ffffff 0%, #f0f0f0 100%);
+    border-radius: 50px;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    user-select: none;
+    font-size: 16px;
+    font-weight: 500;
+    color: #333;
+    transition: all 0.3s ease;
+    animation: float 3s ease-in-out infinite;
+}
+
+/* 有成员的分组气泡：多一圈外环（放在前面，让悬停/选中/拖放高亮能覆盖它） */
+.bubble.has-group {
+    font-weight: 600;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8), 0 0 0 6px rgba(255, 255, 255, 0.25),
+        0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+/* 用独立的 scale 属性，避免被 float 动画的 transform 覆盖 */
+.bubble:hover {
+    scale: 1.15;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+    background: linear-gradient(135deg, #fff 0%, #e0e0ff 100%);
+}
+
+.bubble.selected {
+    background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+    box-shadow: 0 0 20px rgba(255, 215, 0, 0.6);
+    scale: 1.1;
+}
+
+/* 悬停时：关联气泡高亮，其他气泡变淡 */
+.bubble.related {
+    scale: 1.08;
+    background: linear-gradient(135deg, #fffbe6 0%, #ffe9a8 100%);
+    box-shadow: 0 0 0 3px rgba(255, 215, 0, 0.7), 0 0 25px rgba(255, 215, 0, 0.6);
+}
+
+.bubble.dimmed {
+    opacity: 0.35;
+}
+
+/* ===== 框选 / 拖动 / 分组 ===== */
+.bubble {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    touch-action: none; /* 触屏上拖动时不滚动页面 */
+}
+
+/* 框选中的气泡 */
+.bubble.multi-selected {
+    box-shadow: 0 0 0 3px #4fc3f7, 0 0 20px rgba(79, 195, 247, 0.7);
+}
+
+/* 正在拖动：跟手移动，不要过渡延迟 */
+.bubble.dragging {
+    transition: none;
+    z-index: 10;
+    opacity: 0.9;
+    cursor: grabbing;
+}
+
+/* 拖到上方时的目标气泡 */
+.bubble.drop-target {
+    scale: 1.25;
+    background: linear-gradient(135deg, #e0f7fa 0%, #80deea 100%);
+    box-shadow: 0 0 0 4px #fff, 0 0 30px rgba(128, 222, 234, 0.9);
+}
+
+/* 收起在分组里的成员：缩进分组气泡并隐藏 */
+.bubble.in-group-hidden {
+    opacity: 0;
+    scale: 0.2;
+    pointer-events: none;
+}
+
+/* 分组数量角标，点击展开 / 收起 */
+.group-badge {
+    min-width: 24px;
+    height: 24px;
+    padding: 0 7px;
+    border: none;
+    border-radius: 12px;
+    background: #764ba2;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.group-badge[hidden] {
+    display: none;
+}
+
+.bubble.expanded .group-badge {
+    background: #4fc3f7;
+    color: #123;
+}
+
+.group-badge:focus-visible {
+    outline: 2px solid #ffd700;
+    outline-offset: 2px;
+}
+
+/* 框选矩形 */
+#marquee {
+    position: fixed;
+    z-index: 1200;
+    border: 1.5px dashed rgba(255, 255, 255, 0.9);
+    background: rgba(79, 195, 247, 0.18);
+    border-radius: 4px;
+    pointer-events: none;
+}
+
+#marquee[hidden] {
+    display: none;
+}
+
+body.is-marqueeing {
+    user-select: none;
+    cursor: crosshair;
+}
+
+/* 悬停面板里的分组成员 */
+.popup-subtitle {
+    margin-top: 10px;
+}
+
+.related-chip.group-chip {
+    background: linear-gradient(135deg, #e0f7fa 0%, #80deea 100%);
+}
+
+/* 关联词浮动面板 */
+#relatedPopup {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 1500;
+    max-width: 320px;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 18px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+    color: #fff;
+    text-align: center;
+    pointer-events: none; /* 不挡住鼠标，避免触发气泡的 mouseleave */
+    opacity: 0;
+    transform: translateY(8px) scale(0.95);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+#relatedPopup.visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+.popup-title {
+    font-size: 13px;
+    margin-bottom: 8px;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.popup-words {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+}
+
+.popup-empty {
+    font-size: 13px;
+    opacity: 0.85;
+}
+
+/* 每个关联词：先弹出，再持续上下漂浮 */
+.related-chip {
+    padding: 6px 14px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+    color: #333;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    animation:
+        chipIn 0.35s ease-out both,
+        chipFloat 2.4s ease-in-out infinite;
+}
+
+@keyframes chipIn {
+    from {
+        opacity: 0;
+        scale: 0.5;
+    }
+    to {
+        opacity: 1;
+        scale: 1;
+    }
+}
+
+@keyframes chipFloat {
+    0%, 100% {
+        translate: 0 0;
+    }
+    50% {
+        translate: 0 -6px;
+    }
+}
+
+.bubble.pulse {
+    animation: pulse 0.5s ease-in-out, float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+    0%, 100% {
+        transform: translateY(0px) rotate(0deg);
+    }
+    25% {
+        transform: translateY(-10px) rotate(1deg);
+    }
+    50% {
+        transform: translateY(-5px) rotate(-1deg);
+    }
+    75% {
+        transform: translateY(-15px) rotate(0.5deg);
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.2);
+    }
+}
+
+/* 不同气泡的浮动速度 */
+.bubble:nth-child(2n) {
+    animation-duration: 4s;
+}
+
+.bubble:nth-child(3n) {
+    animation-duration: 3.5s;
+}
+
+.bubble:nth-child(4n) {
+    animation-duration: 4.5s;
+}
+
+.bubble:nth-child(5n) {
+    animation-duration: 5s;
+}
