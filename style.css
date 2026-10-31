@@ -233,6 +233,82 @@ body.is-marqueeing {
     cursor: crosshair;
 }
 
+/* 大气泡单击进入内部，用放大镜式光标提示 */
+.bubble.has-group {
+    cursor: zoom-in;
+}
+
+/* ===== 分组内部视图 ===== */
+#viewNav {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    z-index: 1100;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 14px;
+    background: rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 20px;
+    color: #fff;
+    font-size: 14px;
+}
+
+#viewNav[hidden] {
+    display: none;
+}
+
+#viewNav button {
+    padding: 4px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+#viewNav button:hover {
+    background: rgba(255, 255, 255, 0.35);
+}
+
+#viewNav button:focus-visible {
+    outline: 2px solid #ffd700;
+    outline-offset: 2px;
+}
+
+#viewCrumbs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    list-style: none;
+}
+
+#viewCrumbs li + li::before {
+    content: '›';
+    margin: 0 6px;
+    opacity: 0.8;
+}
+
+#viewCrumbs button {
+    border: none;
+    background: none;
+    padding: 2px 4px;
+    text-decoration: underline;
+}
+
+#viewCrumbs [aria-current] {
+    font-weight: 600;
+}
+
+/* 在分组内部时背景稍微变深，提示进入了另一层 */
+body.in-group-view {
+    background: linear-gradient(135deg, #4f5fc4 0%, #5a3a80 100%);
+}
+
 /* 悬停面板里的分组成员 */
 .popup-subtitle {
     margin-top: 10px;

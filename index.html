@@ -16,8 +16,9 @@
                 autocomplete="off"
             >
             <div class="instructions">
-                <p>💡 提示：点击两个气泡可以创建连接 | 悬停查看关联词 | 双击气泡可以删除</p>
+                <p>💡 提示：点击两个单词气泡可以创建连接 | 悬停查看关联词 | 双击气泡可以删除</p>
                 <p>在空白处按住左键框选多个气泡，拖到另一个气泡上即可归类 | 点击数字角标展开/收起分组</p>
+                <p>单击分组大气泡进入内部，按 Esc 或左上角按钮返回</p>
             </div>
             <div class="toolbar">
                 <button type="button" id="exportBtn" title="把所有单词和连接下载为 JSON 文件">导出</button>
@@ -26,6 +27,12 @@
                 <span id="saveStatus" role="status" aria-live="polite"></span>
             </div>
         </div>
+
+        <!-- 进入分组内部时显示：返回按钮 + 面包屑 -->
+        <nav id="viewNav" aria-label="分组导航" hidden>
+            <button type="button" id="viewBackBtn">← 返回上一级</button>
+            <ol id="viewCrumbs"></ol>
+        </nav>
 
         <canvas id="connectionCanvas"></canvas>
         <div id="bubbleContainer"></div>

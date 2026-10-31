@@ -11,9 +11,16 @@ let drag = null;                       // 正在进行的拖动
 let marquee = null;                    // 正在进行的框选
 let suppressClickUntil = 0;            // 拖动/框选结束后短暂屏蔽 click
 const DRAG_THRESHOLD = 5;              // 移动超过这么多像素才算拖动
+let currentView = null;                // 当前进入的分组气泡（null 表示最外层）
+let pendingEnter = null;               // 单击大气泡后等待进入的计时器
+const ENTER_DELAY = 220;               // 等这么久再进入，给双击删除留出时间
 
 // DOM 元素
+const viewNav = document.getElementById('viewNav');
+const viewBackBtn = document.getElementById('viewBackBtn');
+const viewCrumbs = document.getElementById('viewCrumbs');
 const wordInput = document.getElementById('wordInput');
+const DEFAULT_PLACEHOLDER = wordInput.placeholder;
 const relatedPopup = document.getElementById('relatedPopup');
 const bubbleContainer = document.getElementById('bubbleContainer');
 const canvas = document.getElementById('connectionCanvas');
@@ -32,8 +39,16 @@ resizeCanvas();
 // 按回车添加气泡
 wordInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && wordInput.value.trim()) {
-        createBubble(wordInput.value.trim());
+        // 在分组内部时，新单词直接放进这个分组
+        const pos = randomPosition();
+        createBubble(wordInput.value.trim(), {
+            x: pos.x,
+            y: pos.y,
+            parentId: currentView ? currentView.id : null,
+            innerPos: currentView ? pos : null
+        });
         wordInput.value = '';
+        refreshGroups();
         saveState();
     }
 });
@@ -55,7 +70,7 @@ function randomPosition() {
     return { x, y };
 }
 
-// 创建气泡（options 用于从存档恢复：id、x、y、parentId、expanded）
+// 创建气泡（options 用于从存档恢复：id、x、y、parentId、expanded、innerPos）
 function createBubble(word, options = {}) {
     const pos = (options.x !== undefined && options.y !== undefined)
         ? { x: options.x, y: options.y }
@@ -70,6 +85,7 @@ function createBubble(word, options = {}) {
         y: pos.y,
         parentId: options.parentId ?? null, // 归类到哪个气泡下
         expanded: options.expanded === true, // 分组是否展开
+        innerPos: options.innerPos || null,  // 进入上级分组内部时的位置
         element: null,
         badge: null
     };
@@ -107,16 +123,27 @@ function createBubble(word, options = {}) {
         bubbleElement.classList.remove('pulse');
     }, 500);
 
-    // 单击选择气泡或创建连接
+    // 单击：大气泡（有成员）进入内部；普通气泡选择或创建连接
     bubbleElement.addEventListener('click', (e) => {
         e.stopPropagation();
         if (Date.now() < suppressClickUntil) return; // 刚拖动完，不算点击
+        if (getChildren(bubble).length > 0) {
+            if (e.detail > 1) return; // 双击的第二下交给 dblclick 处理
+            clearTimeout(pendingEnter);
+            pendingEnter = setTimeout(() => {
+                pendingEnter = null;
+                setView(bubble);
+            }, ENTER_DELAY);
+            return;
+        }
         handleBubbleClick(bubble);
     });
 
-    // 双击删除气泡
+    // 双击删除气泡（取消等待中的“进入分组”）
     bubbleElement.addEventListener('dblclick', (e) => {
         e.stopPropagation();
+        clearTimeout(pendingEnter);
+        pendingEnter = null;
         deleteBubble(bubble);
     });
 
@@ -302,17 +329,19 @@ function deleteBubble(bubble) {
     hideRelated();
     refreshGroups();
 
-    // 成员交给了上一级分组时，重新排列上一级分组
+    // 成员交给了上一级（展开的）分组时，重新排列上一级分组
     const parent = bubbleById.get(bubble.parentId);
-    if (parent) layoutChildren(parent);
+    if (parent && parent !== currentView) layoutChildren(parent);
 
-    // 放回画布的成员围绕原来的位置散开
-    const released = members.filter(m => m.parentId === null);
+    // 放回当前画面这一层的成员围绕原来的位置散开
+    const home = currentView ? currentView.id : null;
+    const released = members.filter(m => m.parentId === home);
     released.forEach((m, i) => {
         const angle = (i / released.length) * Math.PI * 2;
         setBubblePosition(m,
             cx + Math.cos(angle) * 110 - m.element.offsetWidth / 2,
             cy + Math.sin(angle) * 80 - m.element.offsetHeight / 2);
+        m.innerPos = currentView ? { x: m.x, y: m.y } : null;
         layoutChildren(m);
     });
 
@@ -370,7 +399,8 @@ function drawGroupLinks() {
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
     bubbles.forEach(child => {
         const parent = bubbleById.get(child.parentId);
-        if (!parent || isHidden(child)) return;
+        // 分组内部视图里，外层分组气泡本身不显示，不画虚线
+        if (!parent || isHidden(child) || isHidden(parent)) return;
         const r1 = parent.element.getBoundingClientRect();
         const r2 = child.element.getBoundingClientRect();
         ctx.beginPath();
@@ -396,9 +426,16 @@ document.addEventListener('click', () => {
     clearSelections();
 });
 
-// Esc 取消选择
+// Esc：先取消拖动，再取消选择，都没有时从分组内部返回上一级
 document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') clearSelections();
+    if (e.key !== 'Escape') return;
+    if (drag) {
+        endDrag(true);
+    } else if (selectedBubble || multiSelection.size > 0) {
+        clearSelections();
+    } else if (currentView) {
+        setView(bubbleById.get(currentView.parentId) || null);
+    }
 });
 
 // ================= 分组 / 拖动 / 框选 =================
@@ -418,10 +455,13 @@ function isAncestor(a, b) {
     return false;
 }
 
-// 任意一级上级分组处于收起状态时，气泡不显示
+// 气泡是否不显示：
+// - 进入了某个分组内部时，不在这个分组里的气泡都不显示
+// - 在当前这一层之下，任意一级上级分组处于收起状态时不显示
 function isHidden(bubble) {
+    if (currentView && !isAncestor(currentView, bubble)) return true;
     let p = bubbleById.get(bubble.parentId);
-    for (let guard = 0; p && guard <= bubbles.length; guard++) {
+    for (let guard = 0; p && p !== currentView && guard <= bubbles.length; guard++) {
         if (!p.expanded) return true;
         p = bubbleById.get(p.parentId);
     }
@@ -455,7 +495,12 @@ function setBubblePosition(bubble, x, y) {
 }
 
 // 排列分组成员：展开时绕着分组气泡排成一圈，收起时全部收进分组气泡中心
+// （当前进入的分组例外：它的成员铺满整个画面）
 function layoutChildren(parent) {
+    if (parent === currentView) {
+        layoutView();
+        return;
+    }
     const kids = getChildren(parent);
     if (kids.length === 0) return;
     const c = centerOf(parent);
@@ -499,16 +544,101 @@ function refreshGroups() {
         b.badge.setAttribute('aria-label', label);
         b.badge.tabIndex = hidden ? -1 : 0;
 
-        // 被收起的气泡不能保持选中
-        if (hidden) {
-            setMultiSelected(b, false);
-            if (selectedBubble === b) {
-                b.element.classList.remove('selected');
-                selectedBubble = null;
-            }
+        // 被收起的气泡不能保持选中；变成大气泡后也不再作为连线的起点
+        if (hidden) setMultiSelected(b, false);
+        if ((hidden || n > 0) && selectedBubble === b) {
+            b.element.classList.remove('selected');
+            selectedBubble = null;
         }
     });
 }
+
+// ================= 进入分组内部 =================
+
+// 切换当前视图：bubble 为 null 表示回到最外层
+function setView(bubble) {
+    clearTimeout(pendingEnter);
+    pendingEnter = null;
+    if (bubble === currentView) return;
+    hideRelated();
+    clearSelections();
+    currentView = bubble;
+    refreshGroups();
+    layoutView();
+    renderViewNav();
+    drawConnections();
+}
+
+// 排列当前这一层的气泡
+function layoutView() {
+    if (!currentView) {
+        bubbles.filter(b => b.parentId === null).forEach(layoutChildren);
+        return;
+    }
+    const kids = getChildren(currentView);
+    kids.forEach((k, i) => {
+        // 第一次出现在这个分组里的成员先分配一个位置，之后保持不动
+        if (!k.innerPos) k.innerPos = defaultInnerPos(k, i, kids.length);
+        setBubblePosition(k, k.innerPos.x, k.innerPos.y);
+        layoutChildren(k);
+    });
+}
+
+// 默认位置：成员沿着一个大椭圆排开，避开页面中间的输入区
+function defaultInnerPos(bubble, i, n) {
+    const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    return {
+        x: cx + Math.cos(angle) * window.innerWidth * 0.34 - bubble.element.offsetWidth / 2,
+        y: cy + Math.sin(angle) * window.innerHeight * 0.32 - bubble.element.offsetHeight / 2
+    };
+}
+
+// 顶部导航：返回按钮 + 面包屑（全部 › A › B）
+function renderViewNav() {
+    viewNav.hidden = !currentView;
+    document.body.classList.toggle('in-group-view', !!currentView);
+    wordInput.placeholder = currentView
+        ? `输入单词，按回车添加到「${currentView.word}」...`
+        : DEFAULT_PLACEHOLDER;
+    viewCrumbs.replaceChildren();
+    if (!currentView) return;
+
+    const path = [];
+    let b = currentView;
+    for (let guard = 0; b && guard <= bubbles.length; guard++) {
+        path.unshift(b);
+        b = bubbleById.get(b.parentId);
+    }
+
+    const addCrumb = (label, target, isCurrent) => {
+        const li = document.createElement('li');
+        if (isCurrent) {
+            const span = document.createElement('span');
+            span.textContent = label;
+            span.setAttribute('aria-current', 'page');
+            li.appendChild(span);
+        } else {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = label;
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                setView(target);
+            });
+            li.appendChild(btn);
+        }
+        viewCrumbs.appendChild(li);
+    };
+    addCrumb('全部', null, false);
+    path.forEach((p, i) => addCrumb(p.word, p, i === path.length - 1));
+}
+
+viewBackBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (currentView) setView(bubbleById.get(currentView.parentId) || null);
+});
 
 // 展开 / 收起一个分组
 function toggleExpand(bubble) {
@@ -531,7 +661,10 @@ function groupInto(target, items) {
     if (tops.length === 0) return;
 
     const oldParents = new Set(tops.map(b => bubbleById.get(b.parentId)).filter(Boolean));
-    tops.forEach(b => { b.parentId = target.id; });
+    tops.forEach(b => {
+        b.parentId = target.id;
+        b.innerPos = null; // 到了新分组里重新分配位置
+    });
     target.expanded = false;
 
     clearMultiSelection();
@@ -549,12 +682,16 @@ function groupInto(target, items) {
     showStatus(`已将 ${tops.length} 个单词归入「${target.word}」`);
 }
 
-// 把成员移出所在分组，放回画布
+// 把成员移出所在分组，放回当前画面这一层（最外层或当前进入的分组）
 function ungroup(items) {
-    const moved = items.filter(b => b.parentId !== null);
+    const home = currentView ? currentView.id : null;
+    const moved = items.filter(b => b.parentId !== home);
     if (moved.length === 0) return 0;
     const oldParents = new Set(moved.map(b => bubbleById.get(b.parentId)).filter(Boolean));
-    moved.forEach(b => { b.parentId = null; });
+    moved.forEach(b => {
+        b.parentId = home;
+        b.innerPos = null;
+    });
     refreshGroups();
     oldParents.forEach(p => layoutChildren(p));
     return moved.length;
@@ -655,8 +792,18 @@ function endDrag(cancelled) {
     }
 
     const n = ungroup(d.items);
+    // 在分组内部拖动后，记住成员在这个分组里的位置
+    if (currentView) {
+        d.items.forEach(b => {
+            if (b.parentId === currentView.id) b.innerPos = { x: b.x, y: b.y };
+        });
+    }
     saveState();
-    if (n > 0) showStatus(`已将 ${n} 个单词移出分组`);
+    if (n > 0) {
+        showStatus(currentView
+            ? `已将 ${n} 个单词移到「${currentView.word}」这一层`
+            : `已将 ${n} 个单词移出分组`);
+    }
 }
 
 // 框选矩形
@@ -668,7 +815,7 @@ document.body.appendChild(marqueeEl);
 // 在空白处按下左键开始框选（按住 Shift / ⌘ / Ctrl 可追加选择）
 document.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || drag || marquee) return;
-    if (e.target.closest('.bubble, .input-section, #relatedPopup')) return;
+    if (e.target.closest('.bubble, .input-section, #relatedPopup, #viewNav')) return;
     e.preventDefault(); // 避免选中页面文字，也让输入框保持焦点
     marquee = {
         pointerId: e.pointerId,
@@ -742,11 +889,6 @@ window.addEventListener('blur', () => {
     if (marquee) endMarquee();
 });
 
-// 拖动中按 Esc 取消拖动
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && drag) endDrag(true);
-});
-
 // 定期重绘连接（因为气泡在浮动）
 setInterval(drawConnections, 50);
 
@@ -774,7 +916,8 @@ function serializeState() {
         savedAt: new Date().toISOString(),
         bubbles: bubbles.map(b => ({
             id: b.id, word: b.word, x: b.x, y: b.y,
-            parentId: b.parentId, expanded: b.expanded
+            parentId: b.parentId, expanded: b.expanded,
+            ...(b.innerPos ? { innerX: b.innerPos.x, innerY: b.innerPos.y } : {})
         })),
         connections: connections.map(c => [c.bubble1.id, c.bubble2.id])
     };
@@ -796,6 +939,10 @@ function clearAll() {
     hideRelated();
     clearMultiSelection();
     selectedBubble = null;
+    clearTimeout(pendingEnter);
+    pendingEnter = null;
+    currentView = null;
+    renderViewNav();
     bubbles.forEach(b => b.element.remove());
     bubbles = [];
     connections = [];
@@ -826,7 +973,10 @@ function applyState(data) {
         // 把位置限制在当前窗口内，避免换了屏幕尺寸后气泡跑到外面
         const x = Math.min(Math.max(b.x, 0), Math.max(window.innerWidth - 150, 0));
         const y = Math.min(Math.max(b.y, 0), Math.max(window.innerHeight - 60, 0));
-        createBubble(b.word.trim(), { id: b.id, x, y, expanded: b.expanded === true });
+        const innerPos = Number.isFinite(b.innerX) && Number.isFinite(b.innerY)
+            ? { x: b.innerX, y: b.innerY }
+            : null;
+        createBubble(b.word.trim(), { id: b.id, x, y, expanded: b.expanded === true, innerPos });
     });
 
     // 恢复分组关系：上级必须存在，且不能形成循环
