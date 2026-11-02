@@ -218,10 +218,15 @@ function showRelated(bubble) {
     const related = getRelatedBubbles(bubble);
     const members = getChildren(bubble);
 
-    // 高亮关联气泡（被收起的用所在分组代替），淡化无关气泡；本组成员不淡化
-    const highlightIds = new Set(
-        related.map(visibleAnchor).filter(b => b && b !== bubble).map(b => b.id)
-    );
+    // 画面上与这个气泡相连的所有连线（包括成员之间汇总出来的分组连接）
+    const links = getAnchorLinks().filter(l => l.a === bubble || l.b === bubble);
+    const groupLinks = links
+        .filter(l => l.aggregated)
+        .map(l => ({ other: l.a === bubble ? l.b : l.a, count: l.count }))
+        .sort((x, y) => y.count - x.count);
+
+    // 高亮连线另一端的可见气泡，淡化无关气泡；本组成员不淡化
+    const highlightIds = new Set(links.map(l => (l.a === bubble ? l.b : l.a).id));
     bubbles.forEach(b => {
         const isRelated = highlightIds.has(b.id);
         b.element.classList.toggle('related', isRelated);
@@ -236,12 +241,12 @@ function showRelated(bubble) {
     title.textContent = `「${bubble.word}」的关联词`;
     relatedPopup.appendChild(title);
 
-    if (related.length === 0) {
+    if (related.length === 0 && groupLinks.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'popup-empty';
         empty.textContent = '暂无关联，点击两个气泡来建立连接';
         relatedPopup.appendChild(empty);
-    } else {
+    } else if (related.length > 0) {
         relatedPopup.appendChild(buildChipList(related, 'related-chip'));
     }
 
@@ -250,6 +255,15 @@ function showRelated(bubble) {
         groupTitle.className = 'popup-title popup-subtitle';
         groupTitle.textContent = `分组内（${members.length}）`;
         relatedPopup.append(groupTitle, buildChipList(members, 'related-chip group-chip'));
+    }
+
+    // 分组之间的汇总连接：列出对端气泡和连接数量，如「B × 3」
+    if (groupLinks.length > 0) {
+        const linkTitle = document.createElement('div');
+        linkTitle.className = 'popup-title popup-subtitle';
+        linkTitle.textContent = `分组间连接（${groupLinks.length}）`;
+        const chips = groupLinks.map(g => ({ word: `${g.other.word} × ${g.count}` }));
+        relatedPopup.append(linkTitle, buildChipList(chips, 'related-chip'));
     }
 
     positionPopup(bubble);
@@ -349,16 +363,61 @@ function deleteBubble(bubble) {
     saveState();
 }
 
+// 把底层连接按“画面上可见的两端”聚合：
+// 被收起的成员用所在大气泡代替，同一对可见气泡之间的多条连接合成一条，并记下数量。
+// 这是派生数据，不存档；成员连接增删后自动更新。
+function getAnchorLinks() {
+    const links = new Map();
+    connections.forEach(conn => {
+        const a = visibleAnchor(conn.bubble1);
+        const b = visibleAnchor(conn.bubble2);
+        // 两端都不可见（例如在分组内部视图之外）或落在同一个气泡上就跳过
+        if (!a || !b || a === b) return;
+        const [lo, hi] = a.id < b.id ? [a, b] : [b, a];
+        const key = `${lo.id}-${hi.id}`;
+        let link = links.get(key);
+        if (!link) {
+            link = { a: lo, b: hi, count: 0, aggregated: false };
+            links.set(key, link);
+        }
+        link.count++;
+        // 至少一端是代替成员的大气泡，说明这是分组之间的汇总连接
+        if (a !== conn.bubble1 || b !== conn.bubble2) link.aggregated = true;
+    });
+    return [...links.values()];
+}
+
+// 在汇总连接线的中点画一个数量角标
+function drawCountLabel(x, y, count, alpha, isActive) {
+    const text = String(count);
+    ctx.save();
+    ctx.font = 'bold 12px "Segoe UI", Tahoma, sans-serif';
+    const radius = Math.max(12, ctx.measureText(text).width / 2 + 7);
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(x, y, isActive ? radius + 2 : radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#764ba2'; // 与 .group-badge 同色
+    ctx.shadowBlur = isActive ? 14 : 6;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y + 0.5);
+    ctx.restore();
+}
+
 // 绘制所有连接
 function drawConnections() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     drawGroupLinks();
 
-    connections.forEach(conn => {
-        // 被收起的气泡用所在分组代替；两端落在同一个气泡上就不画
-        const a = visibleAnchor(conn.bubble1);
-        const b = visibleAnchor(conn.bubble2);
-        if (!a || !b || a === b) return;
+    const labels = [];
+    getAnchorLinks().forEach(({ a, b, count, aggregated }) => {
         const rect1 = a.element.getBoundingClientRect();
         const rect2 = b.element.getBoundingClientRect();
 
@@ -382,13 +441,22 @@ function drawConnections() {
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
         ctx.strokeStyle = gradient;
-        ctx.lineWidth = isActive ? 5 : 3;
+        // 汇总连接越多，线越粗（最多加粗 4px）
+        const extra = aggregated ? Math.min(count - 1, 4) : 0;
+        ctx.lineWidth = (isActive ? 5 : 3) + extra;
         ctx.lineCap = 'round';
         ctx.shadowBlur = isActive ? 20 : 10;
         ctx.shadowColor = `rgba(255, 215, 0, ${0.5 * alpha})`;
         ctx.stroke();
         ctx.shadowBlur = 0;
+
+        if (aggregated) {
+            labels.push({ x: (x1 + x2) / 2, y: (y1 + y2) / 2, count, alpha, isActive });
+        }
     });
+
+    // 角标最后画，避免被其他连线盖住
+    labels.forEach(l => drawCountLabel(l.x, l.y, l.count, l.alpha, l.isActive));
 }
 
 // 展开的分组：用虚线把成员和分组气泡连起来
